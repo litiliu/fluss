@@ -22,10 +22,12 @@ import org.apache.fluss.config.ConfigBuilder;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.fs.FileSystem;
 import org.apache.fluss.fs.FileSystemPlugin;
+import org.apache.fluss.fs.s3.token.DynamicTemporaryAWSCredentialsProvider;
 import org.apache.fluss.fs.s3.token.S3ADelegationTokenReceiver;
 import org.apache.fluss.fs.s3.token.S3DelegationTokenReceiver;
 
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
+import org.apache.hadoop.fs.s3a.S3AUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -66,12 +68,14 @@ public class S3FileSystemPlugin implements FileSystemPlugin {
 
         // create the Hadoop FileSystem
         org.apache.hadoop.fs.FileSystem fs = new S3AFileSystem();
-        fs.initialize(getInitURI(fsUri, hadoopConfig), hadoopConfig);
-        return new S3FileSystem(getScheme(), fs, hadoopConfig);
+        URI initUri = getInitURI(fsUri, hadoopConfig);
+        fs.initialize(initUri, hadoopConfig);
+        return new S3FileSystem(getScheme(), initUri, fs, hadoopConfig);
     }
 
     @VisibleForTesting
-    org.apache.hadoop.conf.Configuration buildHadoopConfiguration(Configuration flussConfig) {
+    org.apache.hadoop.conf.Configuration buildHadoopConfiguration(Configuration flussConfig)
+            throws IOException {
         org.apache.hadoop.conf.Configuration hadoopConfig =
                 mirrorCertainHadoopConfig(getHadoopConfiguration(flussConfig));
         setCredentialProvider(hadoopConfig);
@@ -129,13 +133,26 @@ public class S3FileSystemPlugin implements FileSystemPlugin {
         return fsUri;
     }
 
-    private void setCredentialProvider(org.apache.hadoop.conf.Configuration hadoopConfig) {
+    private void setCredentialProvider(org.apache.hadoop.conf.Configuration hadoopConfig)
+            throws IOException {
         boolean hasStaticKeys =
                 hadoopConfig.get(ACCESS_KEY_ID) != null
                         && hadoopConfig.get(ACCESS_KEY_SECRET) != null;
         boolean hasRoleArn = hadoopConfig.get(ROLE_ARN_KEY) != null;
+        boolean hasCredentialProvider =
+                isExplicitlyConfigured(hadoopConfig, PROVIDER_CONFIG_NAME)
+                        && !hadoopConfig.getTrimmed(PROVIDER_CONFIG_NAME, "").isEmpty();
 
-        if (hasStaticKeys || hasRoleArn) {
+        if (hasCredentialProvider) {
+            validateConfiguredCredentialProviders(hadoopConfig);
+            if (hasRoleArn) {
+                throw new IllegalArgumentException(
+                        "AssumeRole and a custom AWS credentials provider cannot be configured together.");
+            }
+            LOG.info(
+                    "Using configured AWS credential provider(s) for server-side S3 access: {}",
+                    hadoopConfig.get(PROVIDER_CONFIG_NAME));
+        } else if (hasStaticKeys || hasRoleArn) {
             LOG.info(
                     hasStaticKeys
                             ? "Using provided static credentials."
@@ -152,5 +169,30 @@ public class S3FileSystemPlugin implements FileSystemPlugin {
                     "Using credential provider {} for delegated tokens.",
                     hadoopConfig.get(PROVIDER_CONFIG_NAME));
         }
+    }
+
+    private void validateConfiguredCredentialProviders(
+            org.apache.hadoop.conf.Configuration hadoopConfig) throws IOException {
+        if (S3AUtils.loadAWSProviderClasses(hadoopConfig, PROVIDER_CONFIG_NAME)
+                .contains(DynamicTemporaryAWSCredentialsProvider.class)) {
+            throw new IllegalArgumentException(
+                    DynamicTemporaryAWSCredentialsProvider.class.getName()
+                            + " is for client-side delegated S3 tokens and cannot be explicitly "
+                            + "configured for server-side S3 access.");
+        }
+    }
+
+    private boolean isExplicitlyConfigured(
+            org.apache.hadoop.conf.Configuration hadoopConfig, String key) {
+        String[] propertySources = hadoopConfig.getPropertySources(key);
+        if (propertySources == null) {
+            return false;
+        }
+        for (String propertySource : propertySources) {
+            if (propertySource == null || !propertySource.endsWith("-default.xml")) {
+                return true;
+            }
+        }
+        return false;
     }
 }

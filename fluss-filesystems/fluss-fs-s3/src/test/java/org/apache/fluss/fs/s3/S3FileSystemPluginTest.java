@@ -19,6 +19,7 @@ package org.apache.fluss.fs.s3;
 
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.fs.s3.token.DynamicTemporaryAWSCredentialsProvider;
+import org.apache.fluss.fs.s3.token.S3DelegationTokenProviderTest;
 import org.apache.fluss.fs.s3.token.S3DelegationTokenReceiver;
 import org.apache.fluss.fs.token.Credentials;
 import org.apache.fluss.fs.token.CredentialsJsonSerde;
@@ -26,9 +27,11 @@ import org.apache.fluss.fs.token.ObtainedSecurityToken;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for server/client detection in {@link S3FileSystemPlugin}. */
 class S3FileSystemPluginTest {
@@ -36,7 +39,7 @@ class S3FileSystemPluginTest {
     private static final String PROVIDER_CONFIG = "fs.s3a.aws.credentials.provider";
 
     @Test
-    void testServerModeWithStaticKeys() {
+    void testServerModeWithStaticKeys() throws IOException {
         Configuration flussConfig = new Configuration();
         flussConfig.setString("fs.s3a.access.key", "testAccessKey");
         flussConfig.setString("fs.s3a.secret.key", "testSecretKey");
@@ -50,7 +53,7 @@ class S3FileSystemPluginTest {
     }
 
     @Test
-    void testServerModeWithRoleArnOnly() {
+    void testServerModeWithRoleArnOnly() throws IOException {
         Configuration flussConfig = new Configuration();
         flussConfig.setString(
                 "fs.s3a.assumed.role.arn", "arn:aws:iam::123456789012:role/test-role");
@@ -64,7 +67,75 @@ class S3FileSystemPluginTest {
     }
 
     @Test
-    void testClientModeWithDelegatedCredentials() {
+    void testServerModeWithConfiguredCredentialProvider() throws IOException {
+        Configuration flussConfig = new Configuration();
+        flussConfig.setString(
+                PROVIDER_CONFIG,
+                S3DelegationTokenProviderTest.RefreshableCredentialsProvider.class.getName());
+
+        S3FileSystemPlugin plugin = new S3FileSystemPlugin();
+        org.apache.hadoop.conf.Configuration hadoopConfig =
+                plugin.buildHadoopConfiguration(flussConfig);
+
+        String providers = hadoopConfig.get(PROVIDER_CONFIG, "");
+        assertThat(providers)
+                .isEqualTo(
+                        S3DelegationTokenProviderTest.RefreshableCredentialsProvider.class
+                                .getName());
+        assertThat(providers).doesNotContain(DynamicTemporaryAWSCredentialsProvider.NAME);
+    }
+
+    @Test
+    void testServerModeWithConfiguredCredentialProviderForS3A() throws IOException {
+        Configuration flussConfig = new Configuration();
+        flussConfig.setString(
+                PROVIDER_CONFIG,
+                S3DelegationTokenProviderTest.RefreshableCredentialsProvider.class.getName());
+
+        S3AFileSystemPlugin plugin = new S3AFileSystemPlugin();
+        org.apache.hadoop.conf.Configuration hadoopConfig =
+                plugin.buildHadoopConfiguration(flussConfig);
+
+        String providers = hadoopConfig.get(PROVIDER_CONFIG, "");
+        assertThat(providers)
+                .isEqualTo(
+                        S3DelegationTokenProviderTest.RefreshableCredentialsProvider.class
+                                .getName());
+        assertThat(providers).doesNotContain(DynamicTemporaryAWSCredentialsProvider.NAME);
+    }
+
+    @Test
+    void testConfiguredDynamicTemporaryProviderThrows() {
+        Configuration flussConfig = new Configuration();
+        flussConfig.setString(PROVIDER_CONFIG, DynamicTemporaryAWSCredentialsProvider.NAME);
+
+        S3FileSystemPlugin plugin = new S3FileSystemPlugin();
+
+        assertThatThrownBy(() -> plugin.buildHadoopConfiguration(flussConfig))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining(DynamicTemporaryAWSCredentialsProvider.NAME)
+                .hasMessageContaining("client-side delegated S3 tokens");
+    }
+
+    @Test
+    void testConfiguredCredentialProviderWithRoleArnThrows() {
+        Configuration flussConfig = new Configuration();
+        flussConfig.setString(
+                PROVIDER_CONFIG,
+                S3DelegationTokenProviderTest.RefreshableCredentialsProvider.class.getName());
+        flussConfig.setString(
+                "fs.s3a.assumed.role.arn", "arn:aws:iam::123456789012:role/test-role");
+
+        S3FileSystemPlugin plugin = new S3FileSystemPlugin();
+
+        assertThatThrownBy(() -> plugin.buildHadoopConfiguration(flussConfig))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("AssumeRole")
+                .hasMessageContaining("custom AWS credentials provider");
+    }
+
+    @Test
+    void testClientModeWithDelegatedCredentials() throws IOException {
         // Pre-populate receiver so updateHadoopConfig does not throw.
         Credentials creds = new Credentials("testKey", "testSecret", "testToken");
         ObtainedSecurityToken token =
