@@ -25,7 +25,6 @@ import org.apache.fluss.fs.token.ObtainedSecurityToken;
 import org.apache.hadoop.conf.Configuration;
 
 import java.io.IOException;
-import java.net.URI;
 
 /**
  * Implementation of the Fluss {@link FileSystem} interface for S3. This class implements the common
@@ -35,7 +34,6 @@ import java.net.URI;
 public class S3FileSystem extends HadoopFileSystem {
 
     private final String scheme;
-    private final URI uri;
     private final Configuration conf;
 
     private volatile S3DelegationTokenProvider s3DelegationTokenProvider;
@@ -50,12 +48,10 @@ public class S3FileSystem extends HadoopFileSystem {
      */
     public S3FileSystem(
             String scheme,
-            URI uri,
             org.apache.hadoop.fs.FileSystem hadoopS3FileSystem,
             Configuration conf) {
         super(hadoopS3FileSystem);
         this.scheme = scheme;
-        this.uri = uri;
         this.conf = conf;
     }
 
@@ -64,7 +60,8 @@ public class S3FileSystem extends HadoopFileSystem {
         if (s3DelegationTokenProvider == null) {
             synchronized (this) {
                 if (s3DelegationTokenProvider == null) {
-                    s3DelegationTokenProvider = new S3DelegationTokenProvider(scheme, uri, conf);
+                    s3DelegationTokenProvider =
+                            new S3DelegationTokenProvider(scheme, getUri(), conf);
                 }
             }
         }

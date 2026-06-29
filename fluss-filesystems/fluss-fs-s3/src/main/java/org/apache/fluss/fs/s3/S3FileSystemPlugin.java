@@ -70,7 +70,7 @@ public class S3FileSystemPlugin implements FileSystemPlugin {
         org.apache.hadoop.fs.FileSystem fs = new S3AFileSystem();
         URI initUri = getInitURI(fsUri, hadoopConfig);
         fs.initialize(initUri, hadoopConfig);
-        return new S3FileSystem(getScheme(), initUri, fs, hadoopConfig);
+        return new S3FileSystem(getScheme(), fs, hadoopConfig);
     }
 
     @VisibleForTesting
