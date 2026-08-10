@@ -517,6 +517,17 @@ public class FlinkConversionsTest {
                                 .stringType()
                                 .noDefaultValue()
                                 .withDescription(ConfigOptions.TABLE_KV_TTL.description()));
+        flinkOption =
+                FlinkConversions.toFlinkOption(ConfigOptions.CLIENT_SASL_OAUTHBEARER_CLIENT_SECRET);
+        assertThat(flinkOption)
+                .isEqualTo(
+                        org.apache.flink.configuration.ConfigOptions.key(
+                                        ConfigOptions.CLIENT_SASL_OAUTHBEARER_CLIENT_SECRET.key())
+                                .stringType()
+                                .noDefaultValue()
+                                .withDescription(
+                                        ConfigOptions.CLIENT_SASL_OAUTHBEARER_CLIENT_SECRET
+                                                .description()));
     }
 
     @Test
