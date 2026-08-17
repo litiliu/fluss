@@ -216,8 +216,7 @@ public class IcebergLakeCatalog implements LakeCatalog {
                     icebergSchema,
                     partitionSpec,
                     sortOrder,
-                    expectedProperties,
-                    context.isCreatingFlussTable());
+                    expectedProperties);
         } catch (NoSuchNamespaceException e) {
             createDatabase(tablePath.getDatabaseName());
             try {
@@ -229,8 +228,7 @@ public class IcebergLakeCatalog implements LakeCatalog {
                         icebergSchema,
                         partitionSpec,
                         sortOrder,
-                        expectedProperties,
-                        context.isCreatingFlussTable());
+                        expectedProperties);
             } catch (NoSuchNamespaceException t) {
                 // shouldn't happen in normal cases
                 throw new RuntimeException(
@@ -407,8 +405,7 @@ public class IcebergLakeCatalog implements LakeCatalog {
             Schema newIcebergSchema,
             PartitionSpec expectedSpec,
             SortOrder expectedSortOrder,
-            Map<String, String> expectedProperties,
-            boolean isCreatingFlussTable) {
+            Map<String, String> expectedProperties) {
         try {
             tableBuilder.create();
         } catch (AlreadyExistsException e) {
@@ -489,14 +486,7 @@ public class IcebergLakeCatalog implements LakeCatalog {
                         e);
             }
 
-            if (isCreatingFlussTable && existingTable.currentSnapshot() != null) {
-                throw new TableAlreadyExistException(
-                        String.format(
-                                "The table %s already exists in Iceberg catalog, and the table is not empty. "
-                                        + "Please first drop the table in Iceberg catalog or use a new table name.",
-                                tablePath),
-                        e);
-            }
+            addMissingIcebergProperties(existingTable, expectedProperties);
         }
     }
 
@@ -537,7 +527,10 @@ public class IcebergLakeCatalog implements LakeCatalog {
         return names;
     }
 
-    /** Checks whether the existing Iceberg partition spec is compatible with the expected one. */
+    /**
+     * Checks whether the existing Iceberg partition spec is compatible with the expected one.
+     * Partition field names and Iceberg-assigned field IDs don't affect the partition semantics.
+     */
     @VisibleForTesting
     boolean isIcebergPartitionSpecCompatible(
             PartitionSpec existingSpec,
@@ -555,10 +548,6 @@ public class IcebergLakeCatalog implements LakeCatalog {
             String existingSource = existingSchema.findColumnName(existing.sourceId());
             String expectedSource = expectedSchema.findColumnName(expected.sourceId());
             if (existingSource == null || !existingSource.equals(expectedSource)) {
-                return false;
-            }
-
-            if (!existing.name().equals(expected.name())) {
                 return false;
             }
 
@@ -612,12 +601,28 @@ public class IcebergLakeCatalog implements LakeCatalog {
             Map<String, String> existingProperties, Map<String, String> expectedProperties) {
         for (Map.Entry<String, String> entry : expectedProperties.entrySet()) {
             String actual = existingProperties.get(entry.getKey());
-            if (actual == null || !actual.equals(entry.getValue())) {
+            if (actual != null && !actual.equals(entry.getValue())) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private void addMissingIcebergProperties(
+            Table existingTable, Map<String, String> expectedProperties) {
+        UpdateProperties updateProperties = existingTable.updateProperties();
+        boolean hasMissingProperties = false;
+        for (Map.Entry<String, String> entry : expectedProperties.entrySet()) {
+            if (!existingTable.properties().containsKey(entry.getKey())) {
+                updateProperties.set(entry.getKey(), entry.getValue());
+                hasMissingProperties = true;
+            }
+        }
+
+        if (hasMissingProperties) {
+            updateProperties.commit();
+        }
     }
 
     private void setFlussPropertyToIceberg(

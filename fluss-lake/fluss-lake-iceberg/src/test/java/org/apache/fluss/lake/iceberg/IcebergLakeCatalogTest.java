@@ -1458,12 +1458,9 @@ class IcebergLakeCatalogTest {
         flussIcebergCatalog.createTable(tablePath, td, firstFlussCreationCtx);
     }
 
-    /**
-     * When creating a fresh Fluss table, if a compatible but non-empty Iceberg table already
-     * exists, the creation should fail with a clear "not empty" message.
-     */
+    /** A fresh Fluss table can bind to a compatible, non-empty Iceberg table. */
     @Test
-    void testCreateFlussTableFailsWhenExistingLakeTableIsNonEmpty() {
+    void testCreateFlussTableWithExistingNonEmptyLakeTable() {
         String database = "non_empty_lake_db";
         String tableName = "non_empty_lake_table";
         TablePath tablePath = TablePath.of(database, tableName);
@@ -1485,7 +1482,7 @@ class IcebergLakeCatalogTest {
                         .loadTable(TableIdentifier.of(database, tableName));
         assertThat(afterAppend.currentSnapshot()).isNotNull();
 
-        // Now creating a brand-new Fluss table on top of a non-empty Iceberg table must fail.
+        // A brand-new Fluss table can bind to the existing compatible Iceberg table.
         TestingLakeCatalogContext firstFlussCreationCtx =
                 new TestingLakeCatalogContext() {
                     @Override
@@ -1494,11 +1491,15 @@ class IcebergLakeCatalogTest {
                     }
                 };
 
-        assertThatThrownBy(
-                        () -> flussIcebergCatalog.createTable(tablePath, td, firstFlussCreationCtx))
-                .isInstanceOf(TableAlreadyExistException.class)
-                .hasMessageContaining("already exists in Iceberg catalog")
-                .hasMessageContaining("not empty");
+        flussIcebergCatalog.createTable(tablePath, td, firstFlussCreationCtx);
+
+        Table afterFlussCreation =
+                flussIcebergCatalog
+                        .getIcebergCatalog()
+                        .loadTable(TableIdentifier.of(database, tableName));
+        assertThat(afterFlussCreation.currentSnapshot()).isNotNull();
+        assertThat(afterFlussCreation.currentSnapshot().snapshotId())
+                .isEqualTo(afterAppend.currentSnapshot().snapshotId());
     }
 
     /**
@@ -1899,6 +1900,49 @@ class IcebergLakeCatalogTest {
                 .hasMessageContaining("table properties are not compatible");
     }
 
+    /**
+     * Missing Fluss-required properties should be added while Iceberg-specific properties are
+     * preserved.
+     */
+    @Test
+    void testCreateTableAddsMissingPropertiesAndPreservesIcebergProperties() {
+        String database = "missing_props_db";
+        String tableName = "missing_props_table";
+        TablePath tablePath = TablePath.of(database, tableName);
+        String timeFormatKey = ConfigOptions.TABLE_AUTO_PARTITION_TIME_FORMAT.key();
+        String icebergTimeFormatKey = "fluss." + timeFormatKey;
+
+        TableDescriptor tableDescriptor =
+                TableDescriptor.builder()
+                        .schema(FLUSS_SCHEMA)
+                        .distributedBy(3)
+                        .property(timeFormatKey, "yyyyMMdd")
+                        .build();
+        flussIcebergCatalog.createTable(
+                tablePath, tableDescriptor, new TestingLakeCatalogContext());
+
+        Table icebergTable =
+                flussIcebergCatalog
+                        .getIcebergCatalog()
+                        .loadTable(TableIdentifier.of(database, tableName));
+        assertThat(icebergTable.properties())
+                .containsEntry(
+                        TableProperties.PARQUET_COMPRESSION,
+                        TableProperties.PARQUET_COMPRESSION_DEFAULT_SINCE_1_4_0);
+        icebergTable.updateProperties().remove(icebergTimeFormatKey).commit();
+        assertThat(icebergTable.properties()).doesNotContainKey(icebergTimeFormatKey);
+
+        flussIcebergCatalog.createTable(
+                tablePath, tableDescriptor, new TestingLakeCatalogContext());
+
+        icebergTable.refresh();
+        assertThat(icebergTable.properties())
+                .containsEntry(icebergTimeFormatKey, "yyyyMMdd")
+                .containsEntry(
+                        TableProperties.PARQUET_COMPRESSION,
+                        TableProperties.PARQUET_COMPRESSION_DEFAULT_SINCE_1_4_0);
+    }
+
     /** White-box tests for {@link IcebergLakeCatalog#isIcebergPartitionSpecCompatible}. */
     @Test
     void testIsIcebergPartitionSpecCompatible() {
@@ -1984,7 +2028,7 @@ class IcebergLakeCatalogTest {
                         .build();
         PartitionSpec flussSpec =
                 PartitionSpec.builderFor(flussSchema)
-                        .day("event_time", "event_day")
+                        .day("event_time", "__fluss_implicit_partition_0")
                         .bucket("id", 1, "id_bucket")
                         .build();
 
@@ -2053,10 +2097,10 @@ class IcebergLakeCatalogTest {
         existing.put("engine.internal", "whatever");
         assertThat(flussIcebergCatalog.isIcebergPropertiesCompatible(existing, expected)).isTrue();
 
-        // Existing missing an expected key -> incompatible.
+        // Missing expected keys can be added when the existing table is bound to Fluss.
         existing = new HashMap<>();
         existing.put("k1", "v1");
-        assertThat(flussIcebergCatalog.isIcebergPropertiesCompatible(existing, expected)).isFalse();
+        assertThat(flussIcebergCatalog.isIcebergPropertiesCompatible(existing, expected)).isTrue();
 
         // Existing has key but different value -> incompatible.
         existing = new HashMap<>(expected);
