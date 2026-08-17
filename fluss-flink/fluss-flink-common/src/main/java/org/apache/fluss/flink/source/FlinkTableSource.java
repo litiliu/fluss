@@ -18,7 +18,6 @@
 package org.apache.fluss.flink.source;
 
 import org.apache.fluss.client.initializer.OffsetsInitializer;
-import org.apache.fluss.client.table.getter.PartitionGetter;
 import org.apache.fluss.config.ConfigOptions;
 import org.apache.fluss.config.Configuration;
 import org.apache.fluss.config.TableConfig;
@@ -39,7 +38,6 @@ import org.apache.fluss.lake.source.LakeSplit;
 import org.apache.fluss.metadata.ChangelogImage;
 import org.apache.fluss.metadata.DeleteBehavior;
 import org.apache.fluss.metadata.MergeEngineType;
-import org.apache.fluss.metadata.PartitionSpec;
 import org.apache.fluss.metadata.TablePath;
 import org.apache.fluss.predicate.PartitionPredicateVisitor;
 import org.apache.fluss.predicate.Predicate;
@@ -126,8 +124,9 @@ public class FlinkTableSource
     private final int[] primaryKeyIndexes;
     // will be empty if no bucket key
     private final int[] bucketKeyIndexes;
-    // will be empty if no partition key
+    // indexes of schema-backed physical partition keys; may be empty for implicit partitions
     private final int[] partitionKeyIndexes;
+    private final boolean partitioned;
     private final boolean streaming;
     private final FlinkConnectorOptionsUtils.StartupOptions startupOptions;
     private final FlinkConnectorOptionsUtils.BoundedOptions boundedOptions;
@@ -199,6 +198,7 @@ public class FlinkTableSource
                 primaryKeyIndexes,
                 bucketKeyIndexes,
                 partitionKeyIndexes,
+                partitionKeyIndexes.length > 0,
                 streaming,
                 startupOptions,
                 FlinkConnectorOptionsUtils.BoundedOptions.unbounded(),
@@ -246,6 +246,7 @@ public class FlinkTableSource
                 primaryKeyIndexes,
                 bucketKeyIndexes,
                 partitionKeyIndexes,
+                partitionKeyIndexes.length > 0,
                 streaming,
                 startupOptions,
                 FlinkConnectorOptionsUtils.BoundedOptions.unbounded(),
@@ -268,6 +269,7 @@ public class FlinkTableSource
             int[] primaryKeyIndexes,
             int[] bucketKeyIndexes,
             int[] partitionKeyIndexes,
+            boolean partitioned,
             boolean streaming,
             FlinkConnectorOptionsUtils.StartupOptions startupOptions,
             FlinkConnectorOptionsUtils.BoundedOptions boundedOptions,
@@ -287,6 +289,7 @@ public class FlinkTableSource
         this.primaryKeyIndexes = primaryKeyIndexes;
         this.bucketKeyIndexes = bucketKeyIndexes;
         this.partitionKeyIndexes = partitionKeyIndexes;
+        this.partitioned = partitioned;
         this.streaming = streaming;
         this.startupOptions = checkNotNull(startupOptions, "startupOptions must not be null");
         this.boundedOptions = checkNotNull(boundedOptions, "boundedOptions must not be null");
@@ -322,6 +325,7 @@ public class FlinkTableSource
         this.primaryKeyIndexes = source.primaryKeyIndexes.clone();
         this.bucketKeyIndexes = source.bucketKeyIndexes.clone();
         this.partitionKeyIndexes = source.partitionKeyIndexes.clone();
+        this.partitioned = source.partitioned;
         this.streaming = source.streaming;
         this.startupOptions = copyStartupOptions(source.startupOptions);
         this.boundedOptions = source.boundedOptions;
@@ -409,7 +413,7 @@ public class FlinkTableSource
     }
 
     private boolean isPartitioned() {
-        return partitionKeyIndexes.length > 0;
+        return partitioned;
     }
 
     @Override
@@ -929,7 +933,8 @@ public class FlinkTableSource
         return projection;
     }
 
-    private boolean lookupCoversAllData(GenericRowData lookupRow) {
+    @VisibleForTesting
+    boolean lookupCoversAllData(GenericRowData lookupRow) {
         if (!isDataLakeEnabled || !isPartitioned()) {
             return true;
         }
@@ -937,15 +942,11 @@ public class FlinkTableSource
         // lake; then always push the single-row lookup down instead of falling back to a scan.
         // Partition keys are a subset of the primary key, so the partition resolves from lookupRow.
         RowType flussRowType = FlinkConversions.toFlussRowType(tableOutputType);
-        PartitionGetter partitionGetter =
-                new PartitionGetter(
-                        flussRowType.project(primaryKeyIndexes),
-                        flussRowType.project(partitionKeyIndexes).getFieldNames());
-        PartitionSpec partitionSpec =
-                partitionGetter
-                        .getResolvedPartitionSpec(new FlinkAsFlussRow(lookupRow))
-                        .toPartitionSpec();
-        return PushdownUtils.partitionExists(tablePath, flussConfig, partitionSpec);
+        return PushdownUtils.partitionExists(
+                tablePath,
+                flussConfig,
+                flussRowType.project(primaryKeyIndexes),
+                new FlinkAsFlussRow(lookupRow));
     }
 
     @VisibleForTesting
