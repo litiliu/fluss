@@ -522,3 +522,23 @@ The `--web` flag opens browser for final review before submission.
 5. Self-review completed (Section 12)
 
 **When in doubt:** Ask the user before proceeding with potentially destructive or far-reaching changes.
+
+---
+
+## 14. Local Harness Scripts
+
+The `.harness/` directory contains local operational scripts for recurring
+cluster tasks. These scripts are not product runtime code.
+
+- Use `.harness/fluss_update_storage_config.sh` to update the jfk cluster's
+  active `/vdb/fluss-1.0-SNAPSHOT/conf/server.yaml` storage settings across all
+  coordinator and tablet server nodes. It is dry-run by default; use
+  `--execute` only after the user has explicitly requested the live change.
+- Use `.harness/fluss_verify_storage_config.sh` to verify jfk storage settings
+  without printing S3 credential values.
+- The shared jfk host list is in `.harness/fluss_jfk_hosts.sh`.
+
+Never place secrets in `.harness/` files, command-line arguments, git commits,
+or chat output. The harness scripts accept credentials through hidden prompts,
+files, or environment variables and only report credential fields as `<set>` or
+`<missing>`.

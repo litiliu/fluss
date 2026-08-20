@@ -1,0 +1,367 @@
+################################################################################
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+name: 1.0-SNAPSHOT Build
+
+on:
+  push:
+    branches:
+      - main
+      - 1.0-SNAPSHOT
+  pull_request:
+    branches:
+      - main
+      - 1.0-SNAPSHOT
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional release tag
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run unit tests
+        run: |
+          set -euo pipefail
+
+          CI_TMP="$(mktemp -d "${RUNNER_TEMP}/fluss-ut-${GITHUB_RUN_ID}-XXXXXX")"
+          NETTY_NATIVE="${CI_TMP}/netty-native"
+          trap 'rm -rf "${CI_TMP}" || true' EXIT
+
+          mkdir -p "${NETTY_NATIVE}"
+          chmod 755 "${CI_TMP}" "${NETTY_NATIVE}"
+
+          export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} \
+            -Djava.io.tmpdir=${CI_TMP} \
+            -Dorg.apache.fluss.shaded.netty4.io.netty.native.workdir=${NETTY_NATIVE} \
+            -Dcom.github.luben.zstd.tmpdir=${CI_TMP} \
+            --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+            --add-exports=java.rmi/sun.rmi.registry=ALL-UNNAMED"
+
+          MAVEN_REACTOR_EXCLUDE_MODULES=(
+            '!fluss-metrics/fluss-metrics-influxdb'
+            '!fluss-flink/fluss-flink-1.19'
+            '!fluss-flink/fluss-flink-1.20'
+            '!fluss-flink/fluss-flink-tiering'
+            '!fluss-spark/fluss-spark-common'
+            '!fluss-spark/fluss-spark-ut'
+            '!fluss-spark/fluss-spark-3.5'
+            '!fluss-spark/fluss-spark-3.4'
+            '!fluss-spark'
+            '!fluss-lake/fluss-lake-paimon'
+            '!fluss-lake/fluss-lake-iceberg'
+            '!fluss-lake/fluss-lake-lance'
+            '!fluss-lake/fluss-lake-hudi'
+            '!fluss-lake'
+            '!fluss-kafka'
+            '!fluss-jmh'
+            '!fluss-filesystems/fluss-fs-oss'
+            '!fluss-filesystems/fluss-fs-gs'
+            '!fluss-filesystems/fluss-fs-azure'
+            '!fluss-filesystems/fluss-fs-obs'
+            '!fluss-filesystems/fluss-fs-cos'
+            '!fluss-filesystems/fluss-fs-hdfs'
+            '!fluss-test-coverage'
+          )
+          MAVEN_REACTOR_EXCLUDES="$(IFS=,; echo "${MAVEN_REACTOR_EXCLUDE_MODULES[*]}")"
+
+          ./mvnw -B -V -T 1C \
+            -DskipOptionalDistPlugins \
+            -Ddist.plugins.descriptor=src/main/assemblies/plugins-slim.xml \
+            -pl "${MAVEN_REACTOR_EXCLUDES}" \
+            clean test
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: snapshot-test-reports-${{ github.run_number }}-${{ github.run_attempt }}
+          path: '**/target/surefire-reports/*.xml'
+          if-no-files-found: ignore
+          retention-days: 7
+
+  package-release:
+    name: Package and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      build_time: ${{ steps.package.outputs.build_time }}
+      package_type: ${{ steps.package.outputs.package_type }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Build distribution package
+        id: package
+        run: |
+          set -euo pipefail
+
+          CI_TMP="$(mktemp -d "${RUNNER_TEMP}/fluss-build-${GITHUB_RUN_ID}-XXXXXX")"
+          NETTY_NATIVE="${CI_TMP}/netty-native"
+          trap 'rm -rf "${CI_TMP}" || true' EXIT
+
+          mkdir -p "${NETTY_NATIVE}"
+          chmod 755 "${CI_TMP}" "${NETTY_NATIVE}"
+
+          export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:-} \
+            -Djava.io.tmpdir=${CI_TMP} \
+            -Dorg.apache.fluss.shaded.netty4.io.netty.native.workdir=${NETTY_NATIVE} \
+            -Dcom.github.luben.zstd.tmpdir=${CI_TMP} \
+            --add-exports=java.security.jgss/sun.security.krb5=ALL-UNNAMED \
+            --add-exports=java.rmi/sun.rmi.registry=ALL-UNNAMED"
+
+          MAVEN_REACTOR_EXCLUDE_MODULES=(
+            '!fluss-metrics/fluss-metrics-influxdb'
+            '!fluss-flink/fluss-flink-1.19'
+            '!fluss-flink/fluss-flink-tiering'
+            '!fluss-spark/fluss-spark-common'
+            '!fluss-spark/fluss-spark-ut'
+            '!fluss-spark/fluss-spark-3.5'
+            '!fluss-spark/fluss-spark-3.4'
+            '!fluss-spark'
+            '!fluss-lake/fluss-lake-paimon'
+            '!fluss-lake/fluss-lake-lance'
+            '!fluss-lake/fluss-lake-hudi'
+            '!fluss-lake'
+            '!fluss-kafka'
+            '!fluss-jmh'
+            '!fluss-filesystems/fluss-fs-oss'
+            '!fluss-filesystems/fluss-fs-gs'
+            '!fluss-filesystems/fluss-fs-azure'
+            '!fluss-filesystems/fluss-fs-obs'
+            '!fluss-filesystems/fluss-fs-cos'
+            '!fluss-filesystems/fluss-fs-hdfs'
+            '!fluss-test-coverage'
+          )
+          MAVEN_REACTOR_EXCLUDES="$(IFS=,; echo "${MAVEN_REACTOR_EXCLUDE_MODULES[*]}")"
+
+          BUILD_TIME="$(date -u '+%Y%m%d%H%M%S')"
+          PACKAGE_TYPE='slim'
+          if [[ "${GITHUB_REF_NAME}" == 'main' ]]; then
+            PACKAGE_TYPE='full'
+          fi
+          echo "build_time=${BUILD_TIME}" >> "${GITHUB_OUTPUT}"
+          echo "package_type=${PACKAGE_TYPE}" >> "${GITHUB_OUTPUT}"
+          echo "Build package type: ${PACKAGE_TYPE}"
+
+          if [[ "${GITHUB_REF_NAME}" == 'main' ]]; then
+            ./mvnw -B -V -T 1C \
+              -DskipTests \
+              -pl fluss-dist,fluss-flink/fluss-flink-2.2 \
+              -am \
+              clean package
+          else
+            ./mvnw -B -V -T 1C \
+              -DskipTests \
+              -DskipOptionalDistPlugins \
+              -Ddist.plugins.descriptor=src/main/assemblies/plugins-slim.xml \
+              -Ddist.package.classifier="-slim-${BUILD_TIME}" \
+              -pl "${MAVEN_REACTOR_EXCLUDES}" \
+              clean package
+          fi
+
+      - name: Collect build artifacts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          if [[ "${GITHUB_REF_NAME}" == 'main' ]]; then
+            packages=(fluss-dist/target/fluss-*-bin.tgz)
+          else
+            packages=(fluss-dist/target/*-slim-*-bin.tgz)
+          fi
+          if (( ${#packages[@]} != 1 )); then
+            echo "Expected exactly one distribution package, found ${#packages[@]}." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_NAME}" != 'main' ]]; then
+            mv "${packages[0]}" "${packages[0]}.gz"
+            packages=("${packages[0]}.gz")
+          fi
+
+          distributions=("${packages[@]}")
+          flink_jars=(fluss-flink/fluss-flink-2.2/target/fluss-flink-2.2-*.jar)
+          iceberg_jars=(fluss-lake/fluss-lake-iceberg/target/fluss-lake-iceberg-*.jar)
+          s3_jars=(fluss-filesystems/fluss-fs-s3/target/fluss-fs-s3-*.jar)
+          if (( ${#distributions[@]} == 0 \
+            || ${#flink_jars[@]} == 0 \
+            || ${#iceberg_jars[@]} == 0 \
+            || ${#s3_jars[@]} == 0 )); then
+            echo "Expected the distribution and three plugin artifacts; found distribution=${#distributions[@]}, flink=${#flink_jars[@]}, iceberg=${#iceberg_jars[@]}, s3=${#s3_jars[@]}." >&2
+            exit 1
+          fi
+          required_artifacts=(
+            "${distributions[@]}"
+            "${flink_jars[@]}"
+            "${iceberg_jars[@]}"
+            "${s3_jars[@]}"
+          )
+          ls -lh "${required_artifacts[@]}"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: fluss-${{ steps.package.outputs.package_type }}-${{ steps.package.outputs.build_time }}
+          path: |
+            fluss-dist/target/fluss-*-bin.tgz
+            fluss-dist/target/*-slim-*-bin.tgz.gz
+            fluss-flink/fluss-flink-2.2/target/fluss-flink-2.2-*.jar
+            fluss-lake/fluss-lake-iceberg/target/fluss-lake-iceberg-*.jar
+            fluss-filesystems/fluss-fs-s3/target/fluss-fs-s3-*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish source repository release
+    if: ${{ github.event_name != 'pull_request' && github.ref_name == '1.0-SNAPSHOT' }}
+    needs: package-release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v6
+        with:
+          name: fluss-${{ needs.package-release.outputs.package_type }}-${{ needs.package-release.outputs.build_time }}
+          path: release-assets
+
+      - name: Publish source repository pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_TIME: ${{ needs.package-release.outputs.build_time }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          release_tag="${RELEASE_TAG_INPUT:-unofficial-1.0-SNAPSHOT-${BUILD_TIME}-${GITHUB_RUN_NUMBER}}"
+          case "${release_tag}" in
+            *[!A-Za-z0-9._-]*)
+              echo "Invalid GitHub release tag: ${release_tag}" >&2
+              echo "Only letters, numbers, dot, underscore, and dash are supported." >&2
+              exit 1
+              ;;
+          esac
+
+          mapfile -t distributions < <(
+            find release-assets -type f -name 'fluss-*-slim-*-bin.tgz.gz' -print
+          )
+          mapfile -t flink_jars < <(
+            find release-assets -type f -name 'fluss-flink-2.2-*.jar' -print
+          )
+          mapfile -t iceberg_jars < <(
+            find release-assets -type f -name 'fluss-lake-iceberg-*.jar' -print
+          )
+          mapfile -t s3_jars < <(
+            find release-assets -type f -name 'fluss-fs-s3-*.jar' -print
+          )
+          if (( ${#distributions[@]} != 1 \
+            || ${#flink_jars[@]} != 1 \
+            || ${#iceberg_jars[@]} != 1 \
+            || ${#s3_jars[@]} != 1 )); then
+            echo "Expected exactly one distribution and one of each plugin release asset; found distribution=${#distributions[@]}, flink=${#flink_jars[@]}, iceberg=${#iceberg_jars[@]}, s3=${#s3_jars[@]}." >&2
+            exit 1
+          fi
+          assets=(
+            "${distributions[@]}"
+            "${flink_jars[@]}"
+            "${iceberg_jars[@]}"
+            "${s3_jars[@]}"
+          )
+
+          notes_file="${RUNNER_TEMP}/source-release-notes-${GITHUB_RUN_ID}.md"
+          printf '%s\n\n%s\n%s\n%s\n\n%s\n' \
+            'Unofficial GitHub Actions build.' \
+            "Artifact build time: ${BUILD_TIME}" \
+            "GitHub Actions run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            "Source commit: ${GITHUB_SHA}" \
+            'This is not an official Apache Fluss release.' \
+            > "${notes_file}"
+
+          gh release create "${release_tag}" "${assets[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Unofficial Fluss 1.0-SNAPSHOT Build ${BUILD_TIME} (#${GITHUB_RUN_NUMBER})" \
+            --notes-file "${notes_file}" \
+            --prerelease
+
+      - name: Keep latest four unofficial snapshot releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          release_prefix='unofficial-1.0-SNAPSHOT-'
+          legacy_release_prefix='github-actions-1.0-SNAPSHOT-'
+          mapfile -t stale_releases < <(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq ".[] | select(.prerelease == true and ((.tag_name | startswith(\"${release_prefix}\")) or (.tag_name | startswith(\"${legacy_release_prefix}\")))) | [.published_at, (.id | tostring), .tag_name] | @tsv" \
+              | sort -r \
+              | awk 'NR > 4 { print $2 "\t" $3 }'
+          )
+
+          if (( ${#stale_releases[@]} == 0 )); then
+            echo 'No stale unofficial snapshot releases to delete.'
+            exit 0
+          fi
+
+          for stale_release in "${stale_releases[@]}"; do
+            IFS=$'\t' read -r release_id release_tag <<< "${stale_release}"
+            echo "Deleting stale unofficial release ${release_tag} (${release_id})."
+            gh api --method DELETE \
+              "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              --silent
+
+            if gh api \
+              "repos/${GITHUB_REPOSITORY}/git/ref/tags/${release_tag}" \
+              --silent >/dev/null 2>&1; then
+              gh api --method DELETE \
+                "repos/${GITHUB_REPOSITORY}/git/refs/tags/${release_tag}" \
+                --silent
+            fi
+          done
