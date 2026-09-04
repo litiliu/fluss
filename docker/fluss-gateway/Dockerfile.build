@@ -21,7 +21,7 @@
 # requested platform.
 FROM rust:1.88-bookworm AS rust-toolchain
 
-FROM rockylinux:8.10 AS builder
+FROM rockylinux/rockylinux:8.10 AS builder
 
 ENV CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:${PATH} \

@@ -221,7 +221,7 @@ jobs:
           binary="$(find "${work_dir}" -path '*/bin/fluss-gateway' -type f -print -quit)"
           docker run --rm --platform linux/amd64 \
             --volume "${binary}:/fluss-gateway:ro" \
-            rockylinux:8.10 \
+            rockylinux/rockylinux:8.10 \
             /fluss-gateway --version
 
       - name: Upload Gateway distribution
