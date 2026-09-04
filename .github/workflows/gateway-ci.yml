@@ -211,6 +211,19 @@ jobs:
           VCS_REF: ${{ github.sha }}
         run: docker/fluss-gateway/build.sh
 
+      - name: Verify DFW glibc compatibility
+        if: matrix.arch == 'amd64'
+        run: |
+          package="$(find target/gateway-release -name 'fluss-gateway-*-bin-linux-amd64.tgz' -print -quit)"
+          test -n "${package}"
+          work_dir="$(mktemp -d)"
+          tar -xzf "${package}" -C "${work_dir}"
+          binary="$(find "${work_dir}" -path '*/bin/fluss-gateway' -type f -print -quit)"
+          docker run --rm --platform linux/amd64 \
+            --volume "${binary}:/fluss-gateway:ro" \
+            rockylinux:8.10 \
+            /fluss-gateway --version
+
       - name: Upload Gateway distribution
         uses: actions/upload-artifact@v6
         with:
