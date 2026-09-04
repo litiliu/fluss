@@ -210,3 +210,11 @@ jobs:
           RUN_SMOKE: "true"
           VCS_REF: ${{ github.sha }}
         run: docker/fluss-gateway/build.sh
+
+      - name: Upload Gateway distribution
+        uses: actions/upload-artifact@v6
+        with:
+          name: fluss-gateway-${{ matrix.arch }}-${{ github.sha }}
+          path: target/gateway-release/fluss-gateway-*-bin-linux-${{ matrix.arch }}.tgz*
+          if-no-files-found: error
+          retention-days: 7
